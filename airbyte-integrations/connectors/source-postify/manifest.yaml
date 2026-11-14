@@ -1,0 +1,357 @@
+version: 7.47.0
+
+type: DeclarativeSource
+
+description: >-
+  Postify is a social media scheduling and publishing app. This connector reads
+  posts (with their per-channel variants and delivery status), connected
+  channels and media library assets from the Postify REST API.
+
+check:
+  type: CheckStream
+  stream_names:
+    - channels
+
+definitions:
+  streams:
+    posts:
+      type: DeclarativeStream
+      name: posts
+      primary_key:
+        - id
+      retriever:
+        type: SimpleRetriever
+        requester:
+          $ref: "#/definitions/base_requester"
+          path: /v1/posts
+        record_selector:
+          type: RecordSelector
+          extractor:
+            type: DpathExtractor
+            field_path:
+              - data
+        paginator:
+          $ref: "#/definitions/cursor_paginator"
+      schema_loader:
+        type: InlineSchemaLoader
+        schema:
+          $ref: "#/schemas/posts"
+    channels:
+      type: DeclarativeStream
+      name: channels
+      primary_key:
+        - id
+      retriever:
+        type: SimpleRetriever
+        requester:
+          $ref: "#/definitions/base_requester"
+          path: /v1/channels
+        record_selector:
+          type: RecordSelector
+          extractor:
+            type: DpathExtractor
+            field_path:
+              - data
+      schema_loader:
+        type: InlineSchemaLoader
+        schema:
+          $ref: "#/schemas/channels"
+    media:
+      type: DeclarativeStream
+      name: media
+      primary_key:
+        - id
+      retriever:
+        type: SimpleRetriever
+        requester:
+          $ref: "#/definitions/base_requester"
+          path: /v1/media
+        record_selector:
+          type: RecordSelector
+          extractor:
+            type: DpathExtractor
+            field_path:
+              - data
+        paginator:
+          $ref: "#/definitions/cursor_paginator"
+      schema_loader:
+        type: InlineSchemaLoader
+        schema:
+          $ref: "#/schemas/media"
+  base_requester:
+    type: HttpRequester
+    url_base: https://app.usepostify.com
+    authenticator:
+      type: BearerAuthenticator
+      api_token: "{{ config['api_key'] }}"
+    error_handler:
+      type: DefaultErrorHandler
+      response_filters:
+        - type: HttpResponseFilter
+          action: FAIL
+          predicate: "{{ response.get('code') == 'quota_exhausted' }}"
+          error_message: >-
+            The monthly API request allowance of the Postify plan is used up.
+            Retrying will not help until the period resets.
+        - type: HttpResponseFilter
+          action: RETRY
+          http_codes:
+            - 429
+            - 500
+            - 502
+            - 503
+            - 504
+      backoff_strategies:
+        - type: WaitTimeFromHeader
+          header: Retry-After
+        - type: ExponentialBackoffStrategy
+          factor: 5
+  cursor_paginator:
+    type: DefaultPaginator
+    page_token_option:
+      type: RequestOption
+      field_name: after
+      inject_into: request_parameter
+    page_size_option:
+      type: RequestOption
+      field_name: limit
+      inject_into: request_parameter
+    pagination_strategy:
+      type: CursorPagination
+      cursor_value: "{{ response.get('next_cursor') }}"
+      stop_condition: "{{ not response.get('has_more') }}"
+      page_size: 100
+
+streams:
+  - $ref: "#/definitions/streams/posts"
+  - $ref: "#/definitions/streams/channels"
+  - $ref: "#/definitions/streams/media"
+
+spec:
+  type: Spec
+  connection_specification:
+    type: object
+    $schema: http://json-schema.org/draft-07/schema#
+    required:
+      - api_key
+    properties:
+      api_key:
+        type: string
+        title: API Key
+        description: >-
+          Postify organization API key (starts with postify_live_). Create one
+          in Postify under Settings, API keys. A read-only key is enough (the
+          "Read your data" permission, which covers the posts:read and
+          channels:read scopes).
+        order: 0
+        airbyte_secret: true
+    additionalProperties: true
+
+schemas:
+  posts:
+    type: object
+    $schema: http://json-schema.org/schema#
+    additionalProperties: true
+    properties:
+      id:
+        type: string
+      status:
+        type:
+          - string
+          - "null"
+      type:
+        type:
+          - string
+          - "null"
+      title:
+        type:
+          - string
+          - "null"
+      body:
+        type:
+          - string
+          - "null"
+      scheduled_at:
+        type:
+          - string
+          - "null"
+        format: date-time
+        airbyte_type: timestamp_with_timezone
+      published_at:
+        type:
+          - string
+          - "null"
+        format: date-time
+        airbyte_type: timestamp_with_timezone
+      created_at:
+        type:
+          - string
+          - "null"
+        format: date-time
+        airbyte_type: timestamp_with_timezone
+      variants:
+        type:
+          - array
+          - "null"
+        items:
+          type: object
+          additionalProperties: true
+          properties:
+            id:
+              type: string
+            channel_id:
+              type:
+                - string
+                - "null"
+            body:
+              type:
+                - string
+                - "null"
+            media:
+              type:
+                - array
+                - "null"
+              items:
+                type: object
+                additionalProperties: true
+                properties:
+                  url:
+                    type:
+                      - string
+                      - "null"
+                  type:
+                    type:
+                      - string
+                      - "null"
+                  alt:
+                    type:
+                      - string
+                      - "null"
+            instagram_trial_reel:
+              type:
+                - string
+                - "null"
+            settings:
+              type:
+                - object
+                - "null"
+      deliveries:
+        type:
+          - array
+          - "null"
+        items:
+          type: object
+          additionalProperties: true
+          properties:
+            channel_id:
+              type:
+                - string
+                - "null"
+            stage:
+              type:
+                - string
+                - "null"
+            external_id:
+              type:
+                - string
+                - "null"
+            error:
+              type:
+                - string
+                - "null"
+  channels:
+    type: object
+    $schema: http://json-schema.org/schema#
+    additionalProperties: true
+    properties:
+      id:
+        type: string
+      platform:
+        type:
+          - string
+          - "null"
+      handle:
+        type:
+          - string
+          - "null"
+      avatar_url:
+        type:
+          - string
+          - "null"
+      followers:
+        type:
+          - integer
+          - "null"
+      status:
+        type:
+          - string
+          - "null"
+      last_sync_at:
+        type:
+          - string
+          - "null"
+        format: date-time
+        airbyte_type: timestamp_with_timezone
+      last_error:
+        type:
+          - string
+          - "null"
+      created_at:
+        type:
+          - string
+          - "null"
+        format: date-time
+        airbyte_type: timestamp_with_timezone
+  media:
+    type: object
+    $schema: http://json-schema.org/schema#
+    additionalProperties: true
+    properties:
+      id:
+        type: string
+      filename:
+        type:
+          - string
+          - "null"
+      content_type:
+        type:
+          - string
+          - "null"
+      kind:
+        type:
+          - string
+          - "null"
+      status:
+        type:
+          - string
+          - "null"
+      url:
+        type:
+          - string
+          - "null"
+      failure_reason:
+        type:
+          - string
+          - "null"
+      size_bytes:
+        type:
+          - integer
+          - "null"
+      width:
+        type:
+          - integer
+          - "null"
+      height:
+        type:
+          - integer
+          - "null"
+      duration_sec:
+        type:
+          - number
+          - "null"
+      created_at:
+        type:
+          - string
+          - "null"
+        format: date-time
+        airbyte_type: timestamp_with_timezone
